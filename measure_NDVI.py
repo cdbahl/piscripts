@@ -1,10 +1,16 @@
-import cv2
+import time
+import csv
 import numpy as np
+import cv2
+from picamera import PiCamera
 from sense_hat import SenseHat
 
-# Initialize the SenseHat and the camera
+# Initialize the camera and SenseHat
+camera = PiCamera()
 sense = SenseHat()
-camera = cv2.VideoCapture(0)
+
+# Set the camera resolution
+camera.resolution = (1920, 1080)
 
 # Define the red and near-infrared channels for NDVI calculation
 red_channel = 2
@@ -16,60 +22,61 @@ leaf_threshold = 100
 # Define the area of the orchid leaves in square meters
 leaf_area = 0.02
 
-# Initialize the NDVI sum and count variables
+# Initialize the NDVI sum, NDVI count, and light intensity variables
 ndvi_sum = 0
 ndvi_count = 0
+light_intensity = 0
 
-while True:
-    # Capture a frame from the camera
-    ret, frame = camera.read()
-    if not ret:
-        break
-    
-    # Convert the frame to grayscale
+# Initialize the CSV file and header row
+with open('orchid_data.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(['Timestamp', 'Temperature', 'Humidity', 'Pressure', 'NDVI', 'Normalized NDVI'])
+
+# Take photos every 60 seconds for 10 minutes
+for i in range(10):
+    # Calculate the timestamp and file name for the photo
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    file_name = 'orchid_' + timestamp + '.jpg'
+
+    # Capture a photo with the camera and save it
+    camera.capture(file_name)
+
+    # Read the photo and convert it to grayscale
+    frame = cv2.imread(file_name)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
+
     # Apply a median filter to remove noise
     blur = cv2.medianBlur(gray, 5)
-    
+
     # Calculate the NDVI for the frame
     red = frame[:, :, red_channel].astype(float)
     nir = frame[:, :, nir_channel].astype(float)
     ndvi = (nir - red) / (nir + red)
-    
-    # Threshold the image to detect the leaves
-    leaf_mask = (blur > leaf_threshold).astype(np.uint8)
-    leaf_mask = cv2.erode(leaf_mask, np.ones((5, 5), np.uint8), iterations=2)
-    leaf_mask = cv2.dilate(leaf_mask, np.ones((5, 5), np.uint8), iterations=2)
-    
-    # Find the contours of the leaves
-    contours, hierarchy = cv2.findContours(leaf_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Iterate over the contours and calculate the mean NDVI
-    for cnt in contours:
-        # Calculate the NDVI intensity for the leaf
-        leaf_ndvi = np.mean(ndvi[cnt[:, :, 1], cnt[:, :, 0]])
-        
-        # Add the NDVI intensity to the sum
-        ndvi_sum += leaf_ndvi
-        
-        # Increment the count
-        ndvi_count += 1
-    
-    # Calculate the mean NDVI normalized per square meter of leaf
-    if ndvi_count > 0:
-        mean_ndvi = ndvi_sum / ndvi_count
-        ndvi_normalized = mean_ndvi / leaf_area
-        print("Mean NDVI normalized per square meter of leaf: {:.3f}".format(ndvi_normalized))
-    
-    # Display the frame with the leaf contours
-    cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
-    cv2.imshow("Orchid", frame)
-    
-    # Exit on key press
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
 
-# Release the camera and close the window
-camera.release()
-cv2.destroyAllWindows()
+    # Threshold the image to detect the leaves
+    leaf_mask = (ndvi > leaf_threshold).astype(np.uint8)
+
+    # Calculate the total signal intensity for the area of the leaves
+    signal_intensity = np.sum(ndvi * leaf_mask)
+
+    # Calculate the mean NDVI normalized per pixel of leaf
+    ndvi_normalized = signal_intensity / (np.sum(leaf_mask) * leaf_area)
+
+    # Normalize the NDVI value to the total light detected
+    ndvi_normalized = ndvi_normalized / (light_intensity + 1)
+
+    # Get the environmental data using SenseHat
+    temperature = sense.get_temperature()
+    humidity = sense.get_humidity()
+    pressure = sense.get_pressure()
+
+    # Record the data in the CSV file
+    with open('orchid_data.csv', 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([timestamp, temperature, humidity, pressure, ndvi, ndvi_normalized])
+
+    # Wait for 60 seconds before taking the next photo
+    time.sleep(60)
+
+# Release the camera resources
+camera.close()
